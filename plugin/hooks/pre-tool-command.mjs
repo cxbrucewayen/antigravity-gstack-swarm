@@ -7,6 +7,7 @@ import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { IS_WIN, buildCleanEnv, gstackRoot, resolveBash, stateRoot, toMsysPath } from './lib-paths.mjs';
+import { warmBrowseDaemon } from './win-browse-daemon.mjs';
 
 function isDestructiveGuardEnabled() {
   const envVal = (process.env.GSTACK_DESTRUCTIVE_GUARD || '').trim().toLowerCase();
@@ -25,7 +26,9 @@ const WATCHED_RE = /\b(rm|del|erase|rd|rmdir|remove-item|ri|shred|unlink|rsync|f
 let raw = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', chunk => { raw += chunk; });
-process.stdin.on('end', () => {
+process.stdin.on('end', async () => {
+  // Windows: start the browse daemon outside Antigravity's per-command process tree (no-op elsewhere).
+  await warmBrowseDaemon(raw);
   try {
     if (!isDestructiveGuardEnabled()) {
       process.stdout.write('{"decision":"allow"}\n');

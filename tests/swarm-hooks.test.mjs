@@ -4,11 +4,14 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import test from 'node:test';
+import { pathToFileURL } from 'node:url';
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '..');
 const WRITE_HOOK = path.join(REPO_ROOT, 'plugin', 'hooks', 'pre-tool-write.mjs');
 const STOP_HOOK = path.join(REPO_ROOT, 'plugin', 'hooks', 'stop-gate.mjs');
 const SWARM_LOCK = path.join(REPO_ROOT, 'runtime', 'bin', 'gstack-swarm-lock.mjs');
+const COMMAND_HOOK = path.join(REPO_ROOT, 'plugin', 'hooks', 'pre-tool-command.mjs');
+const WIN_BROWSE = path.join(REPO_ROOT, 'plugin', 'hooks', 'win-browse-daemon.mjs');
 
 function runHook(hookPath, payloadObj, envExtra = {}) {
   const r = spawnSync(process.execPath, [hookPath], {
@@ -181,5 +184,61 @@ test('Stop contract gate blocks once when gstack-investigate finishes without ro
   } finally {
     fs.rmSync(tmpState, { recursive: true, force: true });
     fs.rmSync(tmpProj, { recursive: true, force: true });
+  }
+});
+
+test('Windows browse warm-up only recognizes real browse invocations', async () => {
+  const { commandUsesBrowse } = await import(pathToFileURL(WIN_BROWSE).href);
+  const yes = [
+    'gstack browse goto https://example.com',
+    'gstack.ps1 browse text',
+    '$B goto https://example.com/stop',
+    '${B} js document.title',
+    'B=$GSTACK_ROOT/browse/dist/browse; $B goto http://localhost:3000',
+    '"C:/tools/gstack/browse/dist/browse.exe" text',
+  ];
+  const no = [
+    'npm test',
+    'echo browse',
+    '$b = 1',
+    '$BUILD_DIR/run',
+    'ls browse/dist/find-browse',
+    '$B stop',
+    'gstack browse connect',
+    'BROWSE_HEADED=1 gstack browse goto https://example.com',
+  ];
+  for (const cmd of yes) assert.equal(commandUsesBrowse(cmd), true, cmd);
+  for (const cmd of no) assert.equal(commandUsesBrowse(cmd), false, cmd);
+});
+
+test('Windows browse warm-up is a no-op off Windows, when disabled, or without a browse binary', async () => {
+  const { warmBrowseDaemon } = await import(pathToFileURL(WIN_BROWSE).href);
+  const tmpProj = fs.mkdtempSync(path.join(os.tmpdir(), 'gstack-test-proj-'));
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gstack-test-root-'));
+  const prevRoot = process.env.GSTACK_ROOT;
+  try {
+    const payload = (cmd) => JSON.stringify({ cwd: tmpProj, toolCall: { name: 'run_command', args: { CommandLine: cmd } } });
+    assert.equal(await warmBrowseDaemon(payload('gstack browse goto https://example.com'), { platformIsWindows: false }), 'skip:not-windows');
+    assert.equal(await warmBrowseDaemon(payload('gstack browse goto https://example.com'), { platformIsWindows: true, env: { GSTACK_WIN_BROWSE_WARMUP: 'off' } }), 'skip:disabled');
+    assert.equal(await warmBrowseDaemon(payload('npm test'), { platformIsWindows: true, env: {} }), 'skip:no-browse');
+    process.env.GSTACK_ROOT = tmpRoot;
+    assert.equal(await warmBrowseDaemon(payload('gstack browse goto https://example.com'), { platformIsWindows: true, env: {} }), 'skip:no-browse-exe');
+    assert.equal(fs.existsSync(path.join(tmpProj, '.gstack')), false);
+  } finally {
+    if (prevRoot === undefined) delete process.env.GSTACK_ROOT; else process.env.GSTACK_ROOT = prevRoot;
+    fs.rmSync(tmpProj, { recursive: true, force: true });
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test('Command guard decisions are unchanged by the browse warm-up', () => {
+  const tmpState = fs.mkdtempSync(path.join(os.tmpdir(), 'gstack-test-state-'));
+  try {
+    const run = (cmd) => runHook(COMMAND_HOOK, { cwd: os.tmpdir(), toolCall: { name: 'run_command', args: { CommandLine: cmd } } },
+      { GSTACK_STATE_ROOT: tmpState, GSTACK_ROOT: tmpState });
+    assert.equal(run('ls -la').decision, 'allow');
+    assert.equal(run('gstack browse goto https://example.com').decision, 'allow');
+  } finally {
+    fs.rmSync(tmpState, { recursive: true, force: true });
   }
 });
