@@ -94,7 +94,7 @@ try {
 
   & $GitBash -lc "
     set -e
-    export PATH='$msysRoot/bin-shim:$msysNpm:$msysRoot/bin:'`$PATH
+    export PATH='$msysRoot/bin-shim:${msysNpm}:$msysRoot/bin:'`$PATH
     cd '$msysRoot'
     echo 'agy' > .gstack-installed-hosts
     bash scripts/build.sh
@@ -103,12 +103,14 @@ try {
       printf 'complete\n' > browse/dist/.build-complete
       echo '    Native CSO security launcher compiled via MSVC!'
     else
+      printf 'complete\n' > browse/dist/.build-complete
       echo '    MSVC C++ workload not detected — skipping optional native CSO launcher (static skills remain active).'
     fi
   "
   bun --no-env-file --config=NUL scripts/gen-skill-docs.ts --host agy
   if (-not $SkipBrowserDownload) {
-    npx playwright install chromium
+    # npx evaluates gstack's package.json overrides and fails with EOVERRIDE on Windows npm.
+    node node_modules/playwright/cli.js install chromium
   }
 } finally {
   Pop-Location
